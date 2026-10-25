@@ -1,5 +1,16 @@
 import { corsHeaders } from '../_shared/cors.ts'
 import { verifyUser } from '../_shared/auth.ts'
+import { getCachedEmbedding, normalizeQuestion, saveEmbedding } from '../_shared/embedding-cache.ts'
+
+function embeddingResponse(embedding: number[], cached: boolean): Response {
+  return new Response(
+    JSON.stringify({ embedding, cached }),
+    {
+      status: 200,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    }
+  )
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
@@ -22,6 +33,15 @@ Deno.serve(async (req: Request) => {
       )
     }
 
+    const normalizedQuestion = normalizeQuestion(question)
+
+    const cachedEmbedding = await getCachedEmbedding(normalizedQuestion)
+    if (cachedEmbedding) {
+      console.log('Embedding cache hit')
+      return embeddingResponse(cachedEmbedding, true)
+    }
+    console.log('Embedding cache miss')
+
     const openAiKey = Deno.env.get('OPENAI_API_KEY')
     if (!openAiKey) {
       throw new Error('Server configuration error: Missing OpenAI API Key')
@@ -34,7 +54,7 @@ Deno.serve(async (req: Request) => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        input: question,
+        input: normalizedQuestion,
         model: 'text-embedding-3-small'
       })
     })
@@ -47,13 +67,9 @@ Deno.serve(async (req: Request) => {
     const openAiData = await openAiResponse.json()
     const embedding = openAiData.data[0].embedding
 
-    return new Response(
-      JSON.stringify({ embedding }),
-      {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      }
-    )
+    await saveEmbedding(normalizedQuestion, embedding)
+
+    return embeddingResponse(embedding, false)
 
   } catch (error: any) {
     const isAuthError = error.message === 'Unauthorized' || error.message === 'Missing Authorization header'
